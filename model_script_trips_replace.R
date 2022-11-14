@@ -17,22 +17,25 @@ library(drpa)
 
 
 # ---- Create directories -----
+# City  - select one
+# city <- "melbourne"
+city <- "brisbane"
 
 # Working directory
 
-scenarioLocation      <- "./scenarios"
-scenarioTripsLocation <- "./scenarios/scenarioTrips"
-finalLocation     <- "output/melbourne-outputs"
+scenarioLocation      <- paste0("./scenarios/", city, "-scenarios")
+scenarioTripsLocation <- paste0("./scenarios/", city, "-scenarios/scenarioTrips")
+finalLocation     <- paste0("output/", city, "-outputs")
 
 # Local path to result folder
 local_dir_path <- "C:/home/"
 
 # Local drive-results (large files)
 
-outputLocation       <- paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-raw")
-combinedLocationDisease     <- paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-combined/disease")
-combinedLocationLifeYears <- paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-combined/LifeYears")
-combineLocationOutputAgg <- paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-combined/OutputAgg")
+outputLocation       <- paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-raw")
+combinedLocationDisease     <- paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-combined/disease")
+combinedLocationLifeYears <- paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-combined/LifeYears")
+combineLocationOutputAgg <- paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-combined/OutputAgg")
 
 
 # Create directories, in case not created yet
@@ -45,7 +48,7 @@ dir.create(combineLocationOutputAgg, recursive=TRUE, showWarnings=FALSE)
 # ---- Get scenarios names and data -----
 
 maxDistanceWalk <- c(0,1,2)
-maxDistanceCycle <- c(0,2,5)
+maxDistanceCycle <- c(0,2,5,10) # SP query: I've added '10', as former outputs did include 10  
 
 tripPurpose <- c("commuting", "all")
 
@@ -73,9 +76,10 @@ scenarios_ShortTrips <- crossing(data.frame(max_walk=maxDistanceWalk),
 # 
 # for (i in 1:nrow(scenarios_ShortTrips)){
 #   generateMatchedPopulationScenario(
-#     output_location="./scenarios",
+#     output_location=paste0("./scenarios/", city, "-scenarios"),
 #     scenario_name=scenarios_ShortTrips[i,]$scenario,
-#     in_data="./Data/processed/trips_melbourne.csv",
+#     in_data=paste0("./Data/processed/trips_", city, ".csv"),
+#     travel_data_location=paste0("./Data/processed/travel_data_", city, ".csv"),
 #     max_walk=scenarios_ShortTrips[i,]$max_walk,
 #     max_cycle=scenarios_ShortTrips[i,]$max_cycle,
 #     purpose=scenarios_ShortTrips[i,]$purpose_full
@@ -97,11 +101,17 @@ population_data="Data/original/abs/population_census.xlsx"
 disease_inventory_location="Data/original/ithimr/disease_outcomes_lookup.csv"
 disease_inventory_location="Data/original/ithimr/disease_outcomes_lookup.csv"
 
-## Victoria specific
+## Victoria/Queensland specific
 
-location_deaths_periodic="Victoria"
-location_deaths_projections="Victoria"
-location_population="Greater Melbourne"
+if (city == "melbourne") {
+  location_deaths_periodic="Victoria"
+  location_deaths_projections="Victoria"
+  location_population="Greater Melbourne"
+} else if (city == "brisbane") {
+  location_deaths_periodic="Queensland"
+  location_deaths_projections="Queensland"
+  location_population="Greater Brisbane"
+}
 
 
 MSLT_DF <- read.csv(mslt_general,as.is=T,fileEncoding="UTF-8-BOM")
@@ -110,7 +120,7 @@ death_rate_periodic <- read.csv(death_rate_periodic,as.is=T,fileEncoding="UTF-8-
   dplyr::select("sex_age_cat", "mx")
 MSLT_DF <- left_join(MSLT_DF, death_rate_periodic)
 
-death_projections <- read.csv(death_rates_projections,as.is=T,fileEncoding="UTF-8-BOM") %>% dplyr::filter(location == "Victoria", assumption == "medium")
+death_projections <- read.csv(death_rates_projections,as.is=T,fileEncoding="UTF-8-BOM") %>% dplyr::filter(location == location_deaths_projections, assumption == "medium")
 
 population <- GetPopulation(
   population_data=population_data,
@@ -230,15 +240,15 @@ for (i in 1:nrow(scenarios_ShortTrips)){
 
 
 # Calculate statistics outputs
+output_diseases_change <- CalculateDisease(inputDirectory=paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-combined/disease"))
+output_life_years_change <- CalculateLifeYears(inputDirectory=paste0(local_dir_path, "results/scenarioTripsReplace/", city, "-outputs-combined/LifeYears")) 
 
-output_diseases_change <- CalculateDisease(inputDirectory=paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-combined/disease"))
-output_life_years_change <- CalculateLifeYears(inputDirectory=paste0(local_dir_path, "results/scenarioTripsReplace/melbourne-outputs-combined/LifeYears")) 
 ## Do list and then append list
 index <- 1
 list_output_agg <- list()
 for (i in 1:nrow(scenarios_ShortTrips)) {
 list_output_agg[[index]] <- CalculateOutputAgg(paste0(local_dir_path, 
-                  "results/scenarioTripsReplace/melbourne-outputs-combined/OutputAgg/", scenarios_ShortTrips[i,]$scenario, ".rds"))
+                  "results/scenarioTripsReplace/", city, "-outputs-combined/OutputAgg/", scenarios_ShortTrips[i,]$scenario, ".rds"))
 index <- index + 1
 }
 

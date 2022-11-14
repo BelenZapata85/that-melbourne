@@ -1,10 +1,16 @@
-# SYNTHETIC POPULATION OF VISTA PERSONS AND NHS PERSONS
+# SYNTHETIC POPULATION OF VISTA (MELBOURNE) / QTS (BRISBANE) PERSONS AND NHS PERSONS
 suppressPackageStartupMessages(library(dplyr)) # for manipulating data
 suppressPackageStartupMessages(library(tidyr)) # for pivoting data
+suppressPackageStartupMessages(library(readxl)) # for reading SEIFA data for Brisbane
 
+
+######################  1) calculateVistaTravelData (Melbourne) & calculateQtsTravelData (Brisbane)  ############################
 # TRAVEL DATA PERSON FILE
+
+### calculateVistaTravelData (Melbourne)
+#-------------------------------------------------#
 ## Join VISTA persons to VISTA Households
-calculateTravelData <- function(hh_VISTA_location,person_VISTA_location,ses_index_location) {
+calculateVistaTravelData <- function(hh_VISTA_location,person_VISTA_location,ses_index_location) {
   # hh_VISTA_location="Data/Travelsurvey/VISTA12-18/H_VISTA_1218_V1.csv"
   # person_VISTA_location="Data/Travelsurvey/VISTA12-18/P_VISTA1218_V1.csv"
   # ses_index_location="Data/Travelsurvey/ABS SEIFA/ses.csv"
@@ -99,12 +105,227 @@ calculateTravelData <- function(hh_VISTA_location,person_VISTA_location,ses_inde
 }
 
 
-### trips_melbourne
+### calculateQtsTravelData (Brisbane) - notes
+#-------------------------------------------------#
+## Based on equivalent function for Melbourne.
+
+## Brisbane output differs from Melbourne output as follows.
+## - SEIFA IRSD deciles are based on SA1s rather than Postcodes.  As IRSD is 
+##     from 2016 and SA1s are from 2021, they based on table of SA1 correspondences. 
+## - There is no 'age' column.  Instead, there is an 'age_band' column, 
+##     in 5 year bands. The Brisbane data does not include exact age. Also:
+##     -- the Melbourne output excludes persons aged 15 and under, but this is not
+##     possible for Brisbane, and so persons aged under 15 are excluded instead;
+##     -- in 'age_group' ages 15-17 should be category 4, and ages 18-19 category 5, 
+##        but these cannot be distinguished in the QTS data, so ages 15-19 are all 
+##        categorised as category 5.  Alternative would be to exclude all 15-19 year olds.
+## - 'TRAVYEAR' (which is a single year rather than a period) replaces 'SurveyPeriod'.
+## - 'REGION' replaces 'HomeSubRegion.
+## - 'SA1_CODE_2021' replaces 'PCODE'.
+## - In 'occupation_cat', Brisbane has 'Professional', 'Technicians and Trades Worker' 
+##     and 'Clerical and Administrative Worker' (in each case, matching the 
+##     categories in persons_pa and NHS CURF), whereas Melbourne has plurals
+##     'Professionals' and 'Workers'.
+
+## Join QTS persons to QTS Households
+calculateQtsTravelData <- function(QTS_location, ses_index_location, SA1_2016_2021_location) {
+  
+  # QTS_location = "Data/Travelsurvey/QTS/"
+  # ses_index_location = "Data/Travelsurvey/ABS SEIFA/2033055001 - sa1 indexes.xls"
+  # SA1_2016_2021_location = "Data/Travelsurvey/ABS SEIFA/CG_SA1_2016_SA1_2021.csv"
+  
+  region_QTS <- read.csv(paste0(QTS_location, "R_REGION.csv"), as.is=T, fileEncoding="UTF-8-BOM")
+  agegroup_QTS <- read.csv(paste0(QTS_location, "RP_AGE_GROUP.csv"), as.is=T, fileEncoding="UTF-8-BOM")
+  anzsco_QTS <- read.csv(paste0(QTS_location, "R_ANZSCO.csv"), as.is=T, fileEncoding="UTF-8-BOM")
+  
+  hh_QTS <- read.csv(paste0(QTS_location, "1_QTS_HOUSEHOLDS.csv"), as.is=T, fileEncoding="UTF-8-BOM") %>%
+    dplyr::select(HHID, TRAVYEAR,  HOME_SA1_2021, stratagroupid = STRATA_LGA) %>%
+    mutate(SA1_CODE_2021 = as.character(HOME_SA1_2021)) %>%
+    left_join(region_QTS, by = "stratagroupid")
+  
+  person_QTS <- person_QTS <- read.csv(paste0(QTS_location, "2_QTS_PERSONS.csv"), as.is=T, fileEncoding="UTF-8-BOM") %>%
+    dplyr::select(PERSID, HHID, AGEGROUP_CODE = AGEGROUP, SEX, WORKSTATUS, STUDYING, ANZSCO_1 = ANZSCO_1.digit, 
+                  INDUSTRY, PERSWGT20) %>%
+    
+    # add ages
+    left_join(agegroup_QTS %>% dplyr::select(AGEGROUP_CODE, age_band = DESCRIPTION) %>% distinct(),
+              by = "AGEGROUP_CODE") %>%
+    
+    # add ANZSCO
+    left_join(anzsco_QTS %>% dplyr::select(ANZSCO_1, Description_1) %>% distinct(),
+              by = "ANZSCO_1")
+  
+  # 2016-2021 SA1 correspondences (needed for 2016 SEIFA IRSD)
+  SA1_2016_2021 <- read.csv(SA1_2016_2021_location, as.is=T, fileEncoding="UTF-8-BOM")
+  
+  ## Add SEIFA-IRSD
+  # SEIFA data by SA1: omit headings (rows 1-5); retain only cols 2 (SA1 code) and 4 (IRSD decile) 
+  ses_index <- readxl::read_xls(ses_index_location, sheet = "Table 1", range = cell_rows(c(6, NA))) %>%
+    dplyr::select(c(2, 4)) %>%
+    rename_all(~c("SA1_MAINCODE_2016", "ses")) %>%
+    filter(!is.na(SA1_MAINCODE_2016)) %>%
+    # join table with corresponding 2021 codes
+    left_join(SA1_2016_2021, by = "SA1_MAINCODE_2016") %>%
+    
+    # where 2021 SA1 corresponds to more than one 2016 SA1, pick the one with the highest correspondence ratio
+    group_by(SA1_CODE_2021) %>%
+    filter(RATIO_FROM_TO == max(RATIO_FROM_TO, na.rm = TRUE)) %>%
+    ungroup() %>%
+    
+    # select required fields
+    dplyr::select(SA1_CODE_2021, SA1_MAINCODE_2016, ses)
+  
+  
+  ## Join persons and household, keep data for greater Brisbane only
+  persons_travel <- left_join(person_QTS, hh_QTS, by = "HHID") %>%
+    filter(REGION == "Greater Brisbane") %>%  # that is, excluding Gold Coast and Sunshine Coast
+    
+    # join SEIFA IRSD
+    inner_join(ses_index, by = "SA1_CODE_2021") %>%
+    
+    # create age category as persons_pa (from NSH) is only available by age groups
+    ## NOTE - ages 15-17 should be category 4, and ages 18-19 category 5, but these
+    ## cannot be distinguished in the QTS data, so ages 15-19 are all categoriesed
+    ## as category 5.  Alternative is to exclude all 15-19 year olds.
+    mutate(age_group = case_when(age_band == "0-4 years"          ~  1,
+                                 age_band == "5-9 years"          ~  2,
+                                 age_band == "10-14 years"        ~  3,
+                                 age_band == "15-19 years"        ~  5,  # see note above
+                                 age_band == "20-24 years"        ~  6,
+                                 age_band == "25-29 years"        ~  7,
+                                 age_band == "30-34 years"        ~  8,
+                                 age_band == "35-39 years"        ~  9,
+                                 age_band == "40-44 years"        ~ 10,
+                                 age_band == "45-49 years"        ~ 11,
+                                 age_band == "50-54 years"        ~ 12,
+                                 age_band == "55-59 years"        ~ 13,
+                                 age_band == "60-64 years"        ~ 14,
+                                 age_band == "65-69 years"        ~ 15,
+                                 age_band == "70-74 years"        ~ 16,
+                                 age_band == "75-79 years"        ~ 17,
+                                 age_band == "80-84 years"        ~ 18,
+                                 age_band == "85-89 years"        ~ 19,
+                                 age_band == "90-94 years"        ~ 19,
+                                 age_band == "95-99 years"        ~ 19,
+                                 age_band == "100 years and over" ~ 19)) %>%
+    
+    mutate(age_group_2 = case_when(age_band == "0-4 years"         ~  2,  ### [for pif calculations [Melbourne?] model]?
+                                   age_band == "5-9 years"          ~  7,
+                                   age_band == "10-14 years"        ~ 12,
+                                   age_band == "15-19 years"        ~ 17,
+                                   age_band == "20-24 years"        ~ 22,
+                                   age_band == "25-29 years"        ~ 27,
+                                   age_band == "30-34 years"        ~ 32,
+                                   age_band == "35-39 years"        ~ 37,
+                                   age_band == "40-44 years"        ~ 42,
+                                   age_band == "45-49 years"        ~ 47,
+                                   age_band == "50-54 years"        ~ 52,
+                                   age_band == "55-59 years"        ~ 57,
+                                   age_band == "60-64 years"        ~ 62,
+                                   age_band == "65-69 years"        ~ 67,
+                                   age_band == "70-74 years"        ~ 72,
+                                   age_band == "75-79 years"        ~ 77,
+                                   age_band == "80-84 years"        ~ 82,
+                                   age_band == "85-89 years"        ~ 87,
+                                   age_band == "90-94 years"        ~ 92,
+                                   age_band == "95-99 years"        ~ 97,
+                                   age_band == "100 years and over" ~ 97)) %>%
+    
+    # only keep people 15 and over
+    # NOTE - Melbourne code at this point only keeps people 18 and over
+    filter(age_group > 4) %>%
+    
+    # sex to match persons_pa sex variable
+    rename(sex = SEX) %>%
+    
+    # employment status to match persons_pa work_status and work_full variables
+    mutate(work_status = ifelse(WORKSTATUS %in% c("workFullTime", "workPartTime"),
+                                "employed",
+                                "unemployed"),
+           work_full = ifelse(WORKSTATUS %in% c("workFullTime"),
+                              "Yes",
+                              "No")) %>%
+    
+    # classification of occupation (ANZSO1)
+    mutate(occupation_cat = 
+             case_when(work_status == "unemployed"      ~ "Not in Work Force",
+                       # others are where work_status is "employed" - 
+                       Description_1 == "MANAGERS"      ~ "Managers",
+                       Description_1 == "PROFESSIONALS" ~ "Professional",  # cf Melbourne - 'Professionals'
+                       Description_1 == "TECHNICIANS AND TRADES WORKERS" ~ "Technicians and Trades Worker", # cf Melbourne - 'Workers'
+                       Description_1 == "COMMUNITY AND PERSONAL SERVICE WORKERS" ~ "Community and Personal Service Workers",
+                       Description_1 == "CLERICAL AND ADMINISTRATIVE WORKERS" ~ "Clerical and Administrative Worker", # cf Melbourne - 'Workers'
+                       Description_1 == "SALES WORKERS" ~ "Sales Workers", 
+                       Description_1 == "MACHINERY OPERATORS AND DRIVERS" ~ "Machinery Operators and Drivers", 
+                       Description_1 == "LABOURERS"     ~ "Labourers", 
+                       Description_1 == "MISCELLANEOUS" ~ as.character(NA),
+                       is.na(Description_1)             ~ as.character(NA))) %>%
+    
+    # classification for industry
+    mutate(industry_cat = 
+             case_when(work_status == "unemployed" ~ "Not in Work Force",
+                       # others are where work_status is "employed" - 
+                       INDUSTRY == "agriculture"   ~ "Agriculture, Forestry and Fishing",
+                       INDUSTRY == "mining"        ~ "Mining",
+                       INDUSTRY == "manufacturing" ~ "Manufacturing",
+                       INDUSTRY == "utilities"     ~ "Electricity, Gas, Water and Waste Services",
+                       INDUSTRY == "construction"  ~ "Construction",
+                       INDUSTRY == "wholesale"     ~ "Wholesale Trade",
+                       INDUSTRY == "retail"        ~ "Retail Trade",
+                       INDUSTRY == "accom"         ~ "Accommodation and Food Services",
+                       INDUSTRY == "transport"     ~ "Transport, Postal and Warehousing",
+                       INDUSTRY == "it"            ~ "Information Media and Telecommunications",
+                       INDUSTRY == "financial"     ~ "Financial and Insurance Services",
+                       INDUSTRY == "realEstate"    ~ "Rental, Hiring and Real Estate Services",
+                       INDUSTRY == "professional"  ~ "Professional, Scientific and Technical Services",
+                       INDUSTRY == "admin"         ~ "Administrative and Support Services",
+                       INDUSTRY == "publicAdmin"   ~ "Public Administration and Safety",
+                       INDUSTRY == "education"     ~ "Education and Training",
+                       INDUSTRY == "health"        ~ "Health Care and Social Assistance",
+                       INDUSTRY == "arts"          ~ "Arts and Recreation Services",
+                       INDUSTRY == "other"         ~ "Other Services",
+                       # fallback for any others (but there are none)
+                       TRUE                        ~ "Inadequately described")) %>%
+    
+    # study status to match persons_pa study_full variable
+    mutate(study_full = 
+             case_when(STUDYING == "tertiaryPartTime" ~ "Part time",
+                       STUDYING == "tertiaryFullTime" ~ "Full time")) %>%
+    
+    # select required fields
+    dplyr::select(persid = PERSID,
+                  hhid = HHID,
+                  age_band, 
+                  age_group,
+                  age_group_2,
+                  sex,
+                  work_status,
+                  work_full,
+                  study_full,
+                  occupation_cat,
+                  industry_cat,
+                  TRAVYEAR, 
+                  REGION, 
+                  SA1_CODE_2021, 
+                  participant_wt = PERSWGT20, 
+                  ses)
+  
+  return(persons_travel)
+  
+}
+
+######################  2) calculatePersonsTravelScenario  ############################
+
 calculatePersonsTravelScenario <- function(travel_data_location,scenario_location) {
-  # travel_data_location="Data/processed/travel_data.csv"
-  # scenario_location="scenarios/scenarioTrips/all_0_2.csv"
+  # travel_data_location="Data/processed/travel_data_melbourne.csv"
+  # scenario_location="scenarios/melbourne_scenarios/scenarioTrips/all_0_2.csv"
   # scenario_location=scenario_trips
     
+  # travel_data_location="Data/processed/travel_data_brisbane.csv"
+  # scenario_location="scenarios/brisbane_scenarios/scenarioTrips/all_0_2.csv"
+  # scenario_location=scenario_trips
+  
+  
   ### Original set
     # "Data/processed/trips_melbourne_scenarios.csv"
 
@@ -113,21 +334,21 @@ calculatePersonsTravelScenario <- function(travel_data_location,scenario_locatio
   
   # if scenario_location is a file location, read the csv. If not, then use it
   # as a dataframe.
-  trips_melbourne <- NULL
+  trips_city <- NULL
    if(is.character(scenario_location)) {
-     trips_melbourne <- read.csv(scenario_location,as.is=T,fileEncoding="UTF-8-BOM")
+     trips_city <- read.csv(scenario_location,as.is=T,fileEncoding="UTF-8-BOM")
   }
   if(!is.character(scenario_location)) {
-    trips_melbourne <- scenario_location
+    trips_city <- scenario_location
   }
-  trips_melbourne <- trips_melbourne %>% mutate(persid=toupper(persid))
+  trips_city <- trips_city %>% mutate(persid=toupper(persid))
   
   ### Create total duration and distance for all modes, rather long process here. 
   ### The intervention will change the trips file (scenario trips file) which in 
   ### turn will feed onto the persons file. 
   
   #### Scenario
-  total_trips_time_dist_base <- trips_melbourne %>%
+  total_trips_time_dist_base <- trips_city %>%
     dplyr::select(persid, trip_mode_base, trip_duration_base_hrs, trip_distance_base) %>%
     # group by person and travel mode
     dplyr::group_by(persid, trip_mode_base) %>%
@@ -145,7 +366,7 @@ calculatePersonsTravelScenario <- function(travel_data_location,scenario_locatio
                   time_base_bicycle,distance_base_bicycle)
   
   #### Scenario
-  total_trips_time_dist_scen <- trips_melbourne %>%
+  total_trips_time_dist_scen <- trips_city %>%
     dplyr::select(persid, trip_mode_scen, trip_duration_scen_hrs, trip_distance_scen) %>%
     # group by person and travel mode
     dplyr::group_by(persid, trip_mode_scen) %>%
@@ -187,9 +408,9 @@ calculatePersonsTravelScenario <- function(travel_data_location,scenario_locatio
 }
 
 
-
-
+######################  3) calculatePersonsPA  ################################
 # PA PERSON AND HOUSEHOLD FILE
+
 ### Create variables to match with travel survey and for pa analysis
 calculatePersonsPA <- function(pa_location,hh_location) {
   # pa_location="Data/Physical activity/NHS2017-18_CSV/NHS17SPB.csv"
@@ -350,6 +571,7 @@ calculatePersonsPA <- function(pa_location,hh_location) {
 }
 
 
+######################  4) calculatePersonsMatch  ################################
 
 ##### Randomly allocate leisure time, work time and walk for transport variables from persons_pa to persons_travel
 
@@ -364,6 +586,16 @@ calculatePersonsPA <- function(pa_location,hh_location) {
 ### walk_rc
 ### walk_trans
 ### walk_base
+
+## Same function applies to Melbourne and Brisbane, but
+## Brisbane output differs from Melbourne output as follows.
+## - There is no 'age' column.  Instead, there is an 'age_band' column, 
+##     in 5 year bands. The Brisbane data does not include exact age. As
+##     a consequence, all 15-19 year olds from the travel data are treated
+##     as 'category 5' (which, in the pa data, is 18-19 year olds), and
+##     15-19 year olds from the travel data are all matched with 18-19 year
+##     olds from the NHS data.
+
 
 calculatePersonsMatch <- function(pa_location,persons_travel_location) {
   pa_location="Data/processed/persons_pa.csv"
@@ -420,51 +652,99 @@ calculatePersonsMatch <- function(pa_location,persons_travel_location) {
  
   
   ### Add demographic groups to match with ITHIMR style code
+  ### for Melbourne - based on 'age'; for Brisbane - based on 'age_band'
+  if ("age" %in% colnames(persons_matched_final)) {  # Melbourne has 'age'
+    persons_matched_final<- persons_matched_final %>%
+      mutate(dem_index = case_when(age <= 19              & sex ==   "male" ~  1,
+                                   age >= 20 & age <=  24 & sex ==   "male" ~  3,
+                                   age >= 25 & age <=  29 & sex ==   "male" ~  5,
+                                   age >= 30 & age <=  34 & sex ==   "male" ~  7,
+                                   age >= 35 & age <=  39 & sex ==   "male" ~  9,
+                                   age >= 40 & age <=  44 & sex ==   "male" ~ 11,
+                                   age >= 45 & age <=  49 & sex ==   "male" ~ 13,
+                                   age >= 50 & age <=  54 & sex ==   "male" ~ 15, 
+                                   age >= 55 & age <=  59 & sex ==   "male" ~ 17,
+                                   age >= 60 & age <=  64 & sex ==   "male" ~ 19,
+                                   age >= 65 & age <=  69 & sex ==   "male" ~ 21, 
+                                   age >= 70 & age <=  74 & sex ==   "male" ~ 23,
+                                   age >= 75 & age <=  79 & sex ==   "male" ~ 25, 
+                                   age >= 80 & age <=  84 & sex ==   "male" ~ 27, 
+                                   age >= 85 & age <=  89 & sex ==   "male" ~ 29,
+                                   age >= 90 & age <=  94 & sex ==   "male" ~ 31,
+                                   age >= 95 & age <= 120 & sex ==   "male" ~ 33,
+                                   age <= 19              & sex == "female" ~  2,
+                                   age >= 20 & age <=  24 & sex == "female" ~  4,
+                                   age >= 25 & age <=  29 & sex == "female" ~  6,
+                                   age >= 30 & age <=  34 & sex == "female" ~  8,
+                                   age >= 35 & age <=  39 & sex == "female" ~ 10,
+                                   age >= 40 & age <=  44 & sex == "female" ~ 12,
+                                   age >= 45 & age <=  49 & sex == "female" ~ 14,
+                                   age >= 50 & age <=  54 & sex == "female" ~ 16,
+                                   age >= 55 & age <=  59 & sex == "female" ~ 18,
+                                   age >= 60 & age <=  64 & sex == "female" ~ 20,
+                                   age >= 65 & age <=  69 & sex == "female" ~ 22,
+                                   age >= 70 & age <=  74 & sex == "female" ~ 24,
+                                   age >= 75 & age <=  79 & sex == "female" ~ 26,
+                                   age >= 80 & age <=  84 & sex == "female" ~ 28,
+                                   age >= 85 & age <=  89 & sex == "female" ~ 30,
+                                   age >= 90 & age <=  94 & sex == "female" ~ 32,
+                                   age >= 95 & age <= 120 & sex == "female" ~ 34))
+  } else if ("age_band" %in% colnames(persons_matched_final)) {  # Brisbane has 'age_band'
+    persons_matched_final<- persons_matched_final %>%
+      mutate(dem_index = case_when(age_band == "15-19 years" & sex == "male" ~  1,
+                                   age_band == "20-24 years" & sex == "male" ~  3,
+                                   age_band == "25-29 years" & sex == "male" ~  5,
+                                   age_band == "30-34 years" & sex == "male" ~  7,
+                                   age_band == "35-39 years" & sex == "male" ~  9,
+                                   age_band == "40-44 years" & sex == "male" ~ 11,
+                                   age_band == "45-49 years" & sex == "male" ~ 13,
+                                   age_band == "50-54 years" & sex == "male" ~ 15,
+                                   age_band == "55-59 years" & sex == "male" ~ 17,
+                                   age_band == "60-64 years" & sex == "male" ~ 19,
+                                   age_band == "65-69 years" & sex == "male" ~ 21,
+                                   age_band == "70-74 years" & sex == "male" ~ 23,
+                                   age_band == "75-79 years" & sex == "male" ~ 25,
+                                   age_band == "80-84 years" & sex == "male" ~ 27,
+                                   age_band == "85-89 years" & sex == "male" ~ 29,
+                                   age_band == "90-94 years" & sex == "male" ~ 31,
+                                   age_band == "95-99 years" & sex == "male" ~ 33,
+                                   age_band == "100 years and over" & sex == "male" ~ 33,
+                                   age_band == "15-19 years" & sex == "female" ~  2,
+                                   age_band == "20-24 years" & sex == "female" ~  4,
+                                   age_band == "25-29 years" & sex == "female" ~  6,
+                                   age_band == "30-34 years" & sex == "female" ~  8,
+                                   age_band == "35-39 years" & sex == "female" ~ 10,
+                                   age_band == "40-44 years" & sex == "female" ~ 12,
+                                   age_band == "45-49 years" & sex == "female" ~ 14,
+                                   age_band == "50-54 years" & sex == "female" ~ 16,
+                                   age_band == "55-59 years" & sex == "female" ~ 18,
+                                   age_band == "60-64 years" & sex == "female" ~ 20,
+                                   age_band == "65-69 years" & sex == "female" ~ 22,
+                                   age_band == "70-74 years" & sex == "female" ~ 24,
+                                   age_band == "75-79 years" & sex == "female" ~ 26,
+                                   age_band == "80-84 years" & sex == "female" ~ 28,
+                                   age_band == "85-89 years" & sex == "female" ~ 30,
+                                   age_band == "90-94 years" & sex == "female" ~ 32,
+                                   age_band == "95-99 years" & sex == "female" ~ 34,
+                                   age_band == "100 years and over" & sex == "female" ~ 34))
+  }
   
-  persons_matched_final<- persons_matched_final %>%
-    mutate(dem_index = case_when(age <= 19              & sex ==   "male" ~  1,
-                                 age >= 20 & age <=  24 & sex ==   "male" ~  3,
-                                 age >= 25 & age <=  29 & sex ==   "male" ~  5,
-                                 age >= 30 & age <=  34 & sex ==   "male" ~  7,
-                                 age >= 35 & age <=  39 & sex ==   "male" ~  9,
-                                 age >= 40 & age <=  44 & sex ==   "male" ~  11,
-                                 age >= 45 & age <=  49 & sex ==   "male" ~  13,
-                                 age >= 50 & age <=  54 & sex ==   "male" ~  15, 
-                                 age >= 55 & age <=  59 & sex ==   "male" ~  17,
-                                 age >= 60 & age <=  64 & sex ==   "male" ~ 19,
-                                 age >= 65 & age <=  69 & sex ==   "male" ~ 21, 
-                                 age >= 70 & age <=  74 & sex ==   "male" ~ 23,
-                                 age >= 75 & age <=  79 & sex ==   "male" ~ 25, 
-                                 age >= 80 & age <=  84 & sex ==   "male" ~ 27, 
-                                 age >= 85 & age <=  89 & sex ==   "male" ~ 29,
-                                 age >= 90 & age <=  94 & sex ==   "male" ~ 31,
-                                 age >= 95 & age <= 120 & sex ==   "male" ~ 33,
-                                 age <= 19              & sex == "female" ~ 2,
-                                 age >= 20 & age <=  24 & sex == "female" ~ 4,
-                                 age >= 25 & age <=  29 & sex == "female" ~ 6,
-                                 age >= 30 & age <=  34 & sex == "female" ~ 8,
-                                 age >= 35 & age <=  39 & sex == "female" ~ 10,
-                                 age >= 40 & age <=  44 & sex == "female" ~ 12,
-                                 age >= 45 & age <=  49 & sex == "female" ~ 14,
-                                 age >= 50 & age <=  54 & sex == "female" ~ 16,
-                                 age >= 55 & age <=  59 & sex == "female" ~ 18,
-                                 age >= 60 & age <=  64 & sex == "female" ~ 20,
-                                 age >= 65 & age <=  69 & sex == "female" ~ 22,
-                                 age >= 70 & age <=  74 & sex == "female" ~ 24,
-                                 age >= 75 & age <=  79 & sex == "female" ~ 26,
-                                 age >= 80 & age <=  84 & sex == "female" ~ 28,
-                                 age >= 85 & age <=  89 & sex == "female" ~ 30,
-                                 age >= 90 & age <=  94 & sex == "female" ~ 32,
-                                 age >= 95 & age <= 120 & sex == "female" ~ 34))%>%
+  ### participant_w present in both PA and travel data frame, we are interested in the travel weights
+  persons_matched_final <- persons_matched_final %>%
     dplyr::rename(participant_wt = participant_wt.x)
-    
-    ### participant_w present in both PA and travel data frame, we are inteterested in the travel weights
-    
   
+    
   ### Select variables ### Keep participant_wt for travel survey
   
+  # select appropriate age field ('age' for Melbourne; 'age_band' for Brisbane)
+  if ("age" %in% colnames(persons_matched_final)) {
+    age_field <- "age"
+  } else if ("age_band" %in% colnames(persons_matched_final)) {
+    age_field <- "age_band"
+  }
+
   persons_matched_final <- persons_matched_final %>%
-    dplyr::select(persid, participant_wt, age, sex, ses, dem_index, work_status, age_group_scen, age_group_2,
+    dplyr::select(persid, participant_wt, all_of(age_field), sex, ses, dem_index, work_status, age_group_scen, age_group_2,
                   occupation_cat, industry_cat, work_full, study_full,
                   mod_total_hr, vig_total_hr, mod_leis_hr, vig_leis_hr, mod_work_hr, vig_work_hr, walk_rc, walk_trans, walk_base,
                   pa_guide_adults, pa_guide_older_adults,

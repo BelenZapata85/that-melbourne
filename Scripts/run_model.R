@@ -118,9 +118,15 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
       if(calculate_AP==T | middle_bit!="ap_") {
         base_var <- paste0('RR_', middle_bit, reference_scenario, '_', ac)
         scen_vars <- paste0('RR_', middle_bit, scen_names, '_', ac)
+        # select appropriate age field ('age' for Melbourne; 'age_band' for Brisbane)
+        if ("age" %in% colnames(ind_ap_pa)) {
+          age_field <- "age"
+        } else if ("age_band" %in% colnames(ind_ap_pa)) {
+          age_field <- "age_band"
+        }
         # set up pif tables
         # dies here if you don't have air pollution
-        pif_table <- setDT(ind_ap_pa[,colnames(ind_ap_pa)%in%c(base_var,'dem_index', 'participant_wt', 'age', 'sex')])
+        pif_table <- setDT(ind_ap_pa[,colnames(ind_ap_pa)%in%c(base_var,'dem_index', 'participant_wt', age_field, 'sex')])
         setnames(pif_table,base_var,'outcome') #problem here
         pif_ref <- pif_table[,.(sum(outcome)),by='dem_index']
         pif_ref_2 <- pif_table[,.(outcome)] 
@@ -132,7 +138,7 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
           scen_var <- scen_vars[index]
           pif_name <- paste0('pif_',ac)
           # Calculate PIFs for selected scenario
-          pif_table <- setDT(ind_ap_pa[,colnames(ind_ap_pa)%in%c(scen_var,'dem_index', 'participant_wt', 'age', 'sex')])
+          pif_table <- setDT(ind_ap_pa[,colnames(ind_ap_pa)%in%c(scen_var,'dem_index', 'participant_wt', age_field, 'sex')])
           setnames(pif_table,scen_var,'outcome', skip_absent = TRUE)
           pif_temp <- pif_table[,.(sum(outcome)),by='dem_index']
           pif_temp_2 <- pif_table[,.(outcome)] 
@@ -533,14 +539,36 @@ CalculationModel <- function(output_location="modelOutput",
   cat(paste0("have run calculateMMETSperPerson\n"))
   
   # Create age groups for easier presentation changes and convert variables to factors for summaries
-  mmets_pp <- mmets_pp %>%
-    dplyr::filter(age != 0) %>%
-    dplyr::mutate(age_group = as.factor(case_when(
-      age <  18             ~ "0 to 17" ,
-      age >= 18 & age <= 40 ~ "18 to 40",
-      age >= 41 & age <= 65 ~ "41 to 65",
-      age >= 65             ~ "65 plus"))) %>%
-    mutate(sex=as.factor(sex)) 
+  # Note Brisbane cannot use same bands as Melbourne, because Brisbane QTS ages are in 5 year bands
+  # [SP query - perhaps Melbourne should use same bands as below for Brisbane - compare current
+  #  bands at https://auo.org.au/transport-health-assessment/ which are 16-19, 20-39, 40-64, 65+]
+  # For Melbourne, groups are based on 'age'; for Brisbane, based on 'age_band'
+  if ("age" %in% colnames(mmets_pp)) {  # Melbourne has 'age'
+    mmets_pp <- mmets_pp %>%
+      dplyr::filter(age != 0) %>%
+      dplyr::mutate(age_group = as.factor(case_when(
+        age <  18             ~ "0 to 17" ,
+        age >= 18 & age <= 40 ~ "18 to 40",
+        age >= 41 & age <= 65 ~ "41 to 65",  ## SP note: perhaps '65' should be '64'
+        age >= 65             ~ "65 plus"))) %>%
+      mutate(sex=as.factor(sex)) 
+  } else if ("age_band" %in% colnames(mmets_pp)) {  # Brisbane has 'age band'
+    mmets_pp <- mmets_pp %>%
+      dplyr::mutate(age_group = as.factor(case_when(
+        age_band == "15-19 years"                      ~ "0 to 19" ,
+        age_band %in% c("20-24 years", "25-29 years",
+                        "30-34 years", "35-39 years")  ~ "20 to 39",
+        age_band %in% c("40-44 years", "45-49 years",
+                        "50-54 years", "55-59 years",
+                        "60-64 years")                 ~ "40 to 64",
+        age_band %in% c("65-69 years", "70-74 years",
+                        "75-79 years", "80-84 years",
+                        "85-89 years", "90-94 years",
+                        "95-99 years", "100 years and over") ~ "65 plus"))) %>%
+      mutate(sex=as.factor(sex)) 
+    
+    }
+    
   
   # Generate relative risks per person (need to use abbraviated names for RRs)
   
@@ -554,7 +582,8 @@ CalculationModel <- function(output_location="modelOutput",
       
       mmets_pp[,paste("RR_pa", s, DISEASE_SHORT_NAMES$acronym[i], sep = "_")] <- 
         drpa::dose_response(cause = DISEASE_SHORT_NAMES$acronym[i],
-        outcome_type = ifelse(DISEASE_SHORT_NAMES$acronym[i] == "diabetes", "fatal",'fatal-and-non-fatal'), #"fatal-and-non-fatal"
+        # outcome_type = ifelse(DISEASE_SHORT_NAMES$acronym[i] == "diabetes", "fatal",'fatal-and-non-fatal'), #"fatal-and-non-fatal"
+        outcome_type = "fatal-and-non-fatal", # SP query: I could only get function to run by making this change so 'outcome_type' is always 'fatal-and-non-fatal'
         dose = mmets_pp[,paste0(s, "_mmet")],quantile = get(paste("QUANTILE"), envir = .GlobalEnv) ,
          confidence_intervals = F,use_75_pert = T)
     }
@@ -1212,13 +1241,42 @@ CalculateOutputAgg <- function(inputDirectory) {
 # Transport
 summariseTransport <- function(inputFile,scenario_name="default") {
   # inputFile=scenarios_Melb[i,]$trips_location
-  data <- read.csv(inputFile,as.is=T, fileEncoding="UTF-8-BOM") %>%
-    dplyr::select(participant_wt,age,sex,trip_mode_base,trip_mode_scen) %>%
-    mutate(agegroup= case_when(
-      age>=15 & age<=19 ~'15-19',
-      age>=20 & age<=39 ~'20-39',
-      age>=40 & age<=64 ~'40-64',
-      age>=65           ~'65plus')) %>%
+  
+  data <- read.csv(inputFile,as.is=T, fileEncoding="UTF-8-BOM")
+  
+  # select appropriate age field ('age' for Melbourne; 'age_band' for Brisbane)
+  if ("age" %in% colnames(data)) {
+    age_field <- "age"
+  } else if ("age_band" %in% colnames(data)) {
+    age_field <- "age_band"
+  }
+  
+  data <- data %>%
+    dplyr::select(participant_wt,all_of(age_field),sex,trip_mode_base,trip_mode_scen)
+  
+  if ("age" %in% colnames(data)) {  # Melbourne has 'age'
+    data <- data %>%
+      mutate(agegroup= case_when(
+        age>=15 & age<=19 ~'15-19',
+        age>=20 & age<=39 ~'20-39',
+        age>=40 & age<=64 ~'40-64',
+        age>=65           ~'65plus'))
+  } else if ("age_band" %in% colnames(data))  {  # Brisbane has 'age_band'
+    data <- data %>%
+      mutate(agegroup = as.factor(case_when(
+        age_band == "15-19 years"                      ~ "15-19" ,
+        age_band %in% c("20-24 years", "25-29 years",
+                        "30-34 years", "35-39 years")  ~ "20-39",
+        age_band %in% c("40-44 years", "45-49 years",
+                        "50-54 years", "55-59 years",
+                        "60-64 years")                 ~ "40-64",
+        age_band %in% c("65-69 years", "70-74 years",
+                        "75-79 years", "80-84 years",
+                        "85-89 years", "90-94 years",
+                        "95-99 years", "100 years and over") ~ "65plus")))
+  }
+  
+  data <- data %>%
     dplyr::select(age=agegroup,sex,participant_wt,bl=trip_mode_base,sc=trip_mode_scen)
   
   
@@ -1277,14 +1335,43 @@ PAOutcomes <- function(inputFile) {
   # inputFile=scenarioLocation
   PA_files<-list.files(inputFile,pattern="*.csv",full.names=T)
   data<-lapply(PA_files,read.csv,header=T) %>%
-    bind_rows() %>%
-    dplyr::select(participant_wt,age,sex,ses,mod_total_hr:scen) %>%
-    mutate(agegroup= case_when(
-      age>=15 & age<=19 ~'15-19',
-      age>=20 & age<=39 ~'20-39',
-      age>=40 & age<=64 ~'40-64',
-      age>=65           ~'65plus')) %>%
+    bind_rows() 
+  
+  # select appropriate age field ('age' for Melbourne; 'age_band' for Brisbane)
+  if ("age" %in% colnames(data)) {
+    age_field <- "age"
+  } else if ("age_band" %in% colnames(data)) {
+    age_field <- "age_band"
+  }
+  
+  data <- data %>%
+    dplyr::select(participant_wt,all_of(age_field),sex,ses,mod_total_hr:scen)
+  
+  if ("age" %in% colnames(data)) {  # Melbourne has 'age'
+    data <- data %>%
+      mutate(agegroup= case_when(
+        age>=15 & age<=19 ~'15-19',
+        age>=20 & age<=39 ~'20-39',
+        age>=40 & age<=64 ~'40-64',
+        age>=65           ~'65plus'))
+  } else if ("age_band" %in% colnames(data))  {  # Brisbane has 'age_band'
+    data <- data %>%
+      mutate(agegroup = as.factor(case_when(
+        age_band == "15-19 years"                      ~ "15-19" ,
+        age_band %in% c("20-24 years", "25-29 years",
+                        "30-34 years", "35-39 years")  ~ "20-39",
+        age_band %in% c("40-44 years", "45-49 years",
+                        "50-54 years", "55-59 years",
+                        "60-64 years")                 ~ "40-64",
+        age_band %in% c("65-69 years", "70-74 years",
+                        "75-79 years", "80-84 years",
+                        "85-89 years", "90-94 years",
+                        "95-99 years", "100 years and over") ~ "65plus")))
+  }
+
+  data <- data %>%  
     dplyr::select(participant_wt,age=agegroup,sex,ses,mod_total_hr:scen)
+  
   dataAll <- bind_rows(
     data,
     data%>%mutate(age='all'),
