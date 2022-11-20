@@ -1,47 +1,11 @@
 #################################################### FUNCTIONS TO RUN_MODEL ###############################################
-suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(tidyr))
-suppressPackageStartupMessages(library(readr))
-suppressPackageStartupMessages(library(data.table))
-suppressPackageStartupMessages(library(srvyr))
-suppressPackageStartupMessages(library(stringr))
-suppressPackageStartupMessages(library(drpa))
-require(ithimr)
-
-
-
-# ----- Generate RRs per person -----
-
-## Using drpa function to generate RRs
-
-gen_pa_rr <- function(dose_response_quantile){
-  # dose_response_quantile=QUANTILE
-  # SCEN_SHORT_NAME <- colnames(mmets_pp)[grep("mmet",colnames(mmets_pp))]
-  #     # removing '_mmet' to find the base scenario and scenario names
-  #     SCEN_SHORT_NAME <- gsub("_mmet","",SCEN_SHORT_NAME)
-  #     CAUSE_OUTCOME <- data.frame(cause=DISEASE_LIST$disease,
-  #                                 outcome=ifelse(DISEASE_LIST$`fatal-and-non-fatal`=="NA", 'fatal','fatal-and-non-fatal'))
-  for (s in SCEN_SHORT_NAME) {
-    for (c in CAUSE_OUTCOME$cause) {
-      
-      # for (o in CAUSE_OUTCOME$outcome) {
-      # s="base"
-      # c="bladder-cancer"
-      # o="fatal-and-non-fatal"
-      
-      ### Scenarios
-      
-      
-      mmets_pp[,paste("RR_pa", s, c, sep = "_")] <- drpa::dose_response(cause = c, outcome_type = ifelse(c=="diabetes", 'fatal',
-                                                                                                         'fatal-and-non-fatal'), 
-                                                                        dose = mmets_pp[,paste0(s, "_mmet")], 
-                                                                        quantile = dose_response_quantile, confidence_intervals = F, 
-                                                                        use_75_pert = T)
-      
-    }
-  }
-  mmets_pp
-}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(data.table)
+library(srvyr)
+library(stringr)
+library(drpa)
 
 
 # ----- Potential Impact Fraction ----
@@ -54,7 +18,7 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
   # demographic_location="Data/processed/DEMO.csv"
   # combined_AP_PA=F
   # calculate_AP=F
-  
+
   
   # if ind_ap_pa_location is a file location, read the csv. If not, then use it as a dataframe.
   ind_ap_pa <- NULL
@@ -67,13 +31,9 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
   DISEASE_INVENTORY <- DISEASE_INVENTORY
   DEMOGRAPHIC <- read.csv(demographic_location,as.is=T,fileEncoding="UTF-8-BOM")
   
-  ### DEMOGRAPHICS need to match mmets_pp population
-  
-  DEMOGRAPHIC <- DEMOGRAPHIC %>%
-    separate(age, c("from_age", "to_age"), "-", remove = FALSE) %>%
-    mutate(age_group_2 = as.numeric(from_age) + 2)
-  
-  DEMOGRAPHIC=DEMOGRAPHIC[DEMOGRAPHIC$age_group_2 %in% ind_ap_pa$age_group_2, ]
+  ### DEMOGRAPHICS need to match mmets_pp/ind_ap_pa population
+
+  DEMOGRAPHIC <- filter(DEMOGRAPHIC, X %in% c(ind_ap_pa$dem_index) & sex %in% c(ind_ap_pa$sex))
   
   # filtering down to columns with 'mmet' in their name
   SCEN_SHORT_NAME <- colnames(ind_ap_pa)[grep("mmet",colnames(ind_ap_pa))]
@@ -82,7 +42,7 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
   
   pop_details <- DEMOGRAPHIC
   pif_scen <- pop_details
-  pif_scen_2 <- ind_ap_pa_location %>% dplyr::select(dem_index, participant_wt, sex, age_group_2)
+  pif_scen_2 <- ind_ap_pa_location %>% dplyr::select(any_of(c("dem_index", "participant_wt", "sex", "age_group_2", "age")))
   # set up reference (scen1)
   reference_scenario <- SCEN_SHORT_NAME[1]
   scen_names <- SCEN_SHORT_NAME[SCEN_SHORT_NAME!=reference_scenario]
@@ -147,23 +107,27 @@ health_burden_2 <- function(ind_ap_pa_location,demographic_location,combined_AP_
           ## sort pif_temp
           setorder(pif_temp,dem_index)
           pif_scen[[pif_name]] <- (pif_ref[,V1] - pif_temp[,V1]) / pif_ref[,V1] 
-          pif_scen_2[[pif_name]] <- (pif_ref_2[,outcome]  - pif_temp_2[,outcome]) / pif_ref_2[,outcome]  
+         pif_scen_2[[pif_name]] <- (pif_ref_2[,outcome]  - pif_temp_2[,outcome]) / pif_ref_2[,outcome]
+         pif <- pif_scen_2 %>%
+           group_by(sex, age) %>%
+           dplyr::summarise_at(vars(starts_with("pif"), "age_group_2"), mean)
           
           
-          ## BZ: added code to calculate pifs by subgroups (DEMO) using participant weights. 
           ### Declare survey as weighted
-          pif_wt <- pif_scen_2 %>%
+          if("participant_wt" %in% colnames(pif_scen_2)) {
+             pif_wt <- pif_scen_2 %>%
             srvyr::as_survey_design(weights = participant_wt)
           ### Calculate mean pifs by age and sex
-          pif_weighted <-  pif_wt  %>%
-            group_by(sex, age_group_2) %>%
-            dplyr::summarise_at(vars(starts_with("pif")), survey_mean)
-          
+          pif <-  pif_wt  %>%
+            group_by(sex, age) %>%
+            dplyr::summarise_at(vars(starts_with("pif"),"age_group_2"), survey_mean)}
+
+        
         }
       }
     }
   }
-  return(list(pif_scen, pif_weighted, pif_scen_2))
+  pif
 }
 
 # ----- Proportional multi-state life table ----
@@ -293,14 +257,10 @@ RunDisease <- function(in_idata, in_sex, in_mid_age, in_disease, incidence_trend
   
   # Select columns for lifetable calculations
   
-  ##BZ: back to using filtering, otherwise the life tables are not run by cohort (age and sex)
   dlt_df <- in_idata %>%
     dplyr::filter(age >= in_mid_age & sex == in_sex) %>% 
     dplyr::select('sex', 'age', dw_disease, incidence_disease, case_fatality_disease)
   
-  ##BZ: Rob, line 264 does not filter by age and sex, each disease life table starts at firt age cohort (e.g. 17) and by gender. 
-  
-  # dlt_df <- in_idata[,colnames(in_idata) %in% c('sex', 'age', 'dw_disease', 'incidence_disease', 'case_fatality_disease')] # dplyr::select(sex, age, dw_disease, incidence_disease, case_fatality_disease)
   
   dlt_df$disease <- in_disease
   
@@ -311,7 +271,7 @@ RunDisease <- function(in_idata, in_sex, in_mid_age, in_disease, incidence_trend
       dplyr::filter(sex == in_sex) %>%
       dplyr::select('year',mortality_trend=in_disease) %>%
       dplyr::mutate(row_num=row_number())
-    # BELEN: I'm not sure what to do with the incidence trend so I just multiplied it with case_fatality_disease
+
     dlt_df <- dlt_df %>%
       dplyr::mutate(row_num=row_number()) %>%
       dplyr::inner_join(cohort_mortality_trends, by=c('row_num')) %>%
@@ -326,7 +286,7 @@ RunDisease <- function(in_idata, in_sex, in_mid_age, in_disease, incidence_trend
       dplyr::filter(sex == in_sex) %>%
       dplyr::select('year',incidence_trend=in_disease) %>%
       dplyr::mutate(row_num=row_number())
-    # BELEN: I'm not sure what to do with the incidence trend so I just multiplied it with incidence_disease
+   
     dlt_df <- dlt_df %>%
       dplyr::mutate(row_num=row_number()) %>%
       dplyr::inner_join(cohort_incidence_trends, by=c('row_num')) %>%
@@ -470,23 +430,6 @@ GetParameters <- function(DIABETES_IHD_RR_F = 2.82,
     }
   }
   
-  ### Marginal METs
-  
-  # normVariablesMMETs <- c("MMET_CYCLING",
-  #                         "MMET_WALKING")
-  # 
-  # 
-  # for (i in 1:length(normVariablesMMETs)) {
-  #   name <- normVariablesMMETs[i]
-  #   val <- get(normVariablesMMETs[i])
-  #   if (length(val) == 1) {
-  #     parameters[[name]] <- val[1]
-  #   } else {
-  #     parameters[[name]] <-
-  #       rlnorm(NSAMPLES, log(val[1]), log(val[2]))
-  #   }
-  # }
-  
   
   ### Relative risks physical activity
   
@@ -571,19 +514,24 @@ CalculationModel <- function(output_location="modelOutput",
     
   
   # Generate relative risks per person (need to use abbraviated names for RRs)
+  # Check that sometimes it throws an error if function not ran prior to running code in model_script...
   
   for (s in SCEN_SHORT_NAME) {
     for (i in 1:nrow(DISEASE_SHORT_NAMES)) {
       # s="scen1"
-       # i=10
-       # o="fatal-and-non-fatal"
+      # i=6
+      # o="fatal-and-non-fatal"
 
       
       
       mmets_pp[,paste("RR_pa", s, DISEASE_SHORT_NAMES$acronym[i], sep = "_")] <- 
         drpa::dose_response(cause = DISEASE_SHORT_NAMES$acronym[i],
+<<<<<<< HEAD
         # outcome_type = ifelse(DISEASE_SHORT_NAMES$acronym[i] == "diabetes", "fatal",'fatal-and-non-fatal'), #"fatal-and-non-fatal"
         outcome_type = "fatal-and-non-fatal", # SP query: I could only get function to run by making this change so 'outcome_type' is always 'fatal-and-non-fatal'
+=======
+        outcome_type = "fatal-and-non-fatal", #"ifelse(DISEASE_SHORT_NAMES$acronym[i] == diabetes", "fatal",'fatal-and-non-fatal')
+>>>>>>> 75f32259482261ee9367cc940c7fdc2762f3c4b2
         dose = mmets_pp[,paste0(s, "_mmet")],quantile = get(paste("QUANTILE"), envir = .GlobalEnv) ,
          confidence_intervals = F,use_75_pert = T)
     }
@@ -600,21 +548,20 @@ CalculationModel <- function(output_location="modelOutput",
     calculate_AP=F
   ) 
 
-  
-  pif_age_sex <- pif[[2]] %>% dplyr::rename(age=age_group_2) %>%
-    dplyr::slice(rep(1:dplyr::n(), each = 5))
-  
-  age <- rep(seq(16,100,1), times = 2)
-  
-  pif_age_sex$age <- age
-  
-  pif_age_sex <- pif_age_sex %>% dplyr::filter(age !=16)
+
+  pif_expanded <- pif %>% 
+    group_by(sex) %>%
+    do(data.frame(age=seq(1:100))) %>%
+    ungroup() %>%
+    left_join(pif) %>% 
+    dplyr::filter(age !=16) %>%
+    replace(is.na(.), 0)
   
   # Calculate PMSLT
   
-  ## Inputs
-  pif_expanded <- pif_age_sex
   
+  ## Inputs
+
   cat(paste0("have run health_burden_2\n"))
   
   ### Steps 
@@ -624,6 +571,8 @@ CalculationModel <- function(output_location="modelOutput",
   # 4) Collect changes in mx and pylds from differences between baseline and sceanrio disease life tables
   # 5) Recalculate general life table with mx and totalpylds modified by 4
   
+  
+
   # 1) Run general life table baseline
   
   # browser()
@@ -1130,7 +1079,7 @@ CalculationModel <- function(output_location="modelOutput",
   ### Create directories
   
   # outputDir <- paste0(output_location,"/output_df/")
-  pifsDir <- paste0(output_location,"/pifs/")
+  # pifsDir <- paste0(output_location,"/pifs/")
   mmetsDir <- paste0(output_location,"/mmets/")
   outputDFaggDir <- paste0(output_location,"/output_df_agg/")
   lifeYearsDir <- paste0(output_location,"/life_years/")
@@ -1138,15 +1087,15 @@ CalculationModel <- function(output_location="modelOutput",
   
   
   # dir.create(outputDir, recursive=TRUE, showWarnings=FALSE)
-  dir.create(pifsDir, recursive=TRUE, showWarnings=FALSE)
-  dir.create(mmetsDir, recursive=TRUE, showWarnings=FALSE)
+  # dir.create(pifsDir, recursive=TRUE, showWarnings=FALSE)
+  # dir.create(mmetsDir, recursive=TRUE, showWarnings=FALSE)
   dir.create(outputDFaggDir, recursive=TRUE, showWarnings=FALSE)
   dir.create(lifeYearsDir, recursive=TRUE, showWarnings=FALSE)
   dir.create(diseaseDir, recursive=TRUE, showWarnings=FALSE)
   
   # write.csv(output_df, file=paste0(outputDir, seed_current, ".csv"), row.names=FALSE)
-  write.csv(pif[[2]], file=paste0(pifsDir, seed_current,".csv"), row.names=FALSE)
-  write.csv(mmets_pp, file=paste0(mmetsDir, seed_current,".csv"), row.names=FALSE)
+  # write.csv(pif[[2]], file=paste0(pifsDir, seed_current,".csv"), row.names=FALSE)
+  # write.csv(mmets_pp, file=paste0(mmetsDir, seed_current,".csv"), row.names=FALSE)
   write.csv(output_df_agg, file=paste0(outputDFaggDir, seed_current,".csv"), row.names=FALSE)
   write.csv(output_life_years_change, file=paste0(lifeYearsDir, seed_current,".csv"), row.names=FALSE)
   write.csv(output_diseases_change, file=paste0(diseaseDir, seed_current,".csv"), row.names=FALSE)
@@ -1220,14 +1169,8 @@ library(fst)
 
 # Aggregate output
 CalculateOutputAgg <- function(inputDirectory) {
-  # inputDirectory="C:/home/results/scenarioTripsReplace/melbourne-outputs-combined/OutputAgg/all_0_2.rds"
-  # files=1:4
-  # memory.limit(size = 560000)
-  # 
-  # file_location <- list.files(inputDirectory, pattern = "*.rds", full.names=T,recursive=T)
-  # # 
-  # input <- ldply(file_location[files], readRDS)
-  # 
+
+
   data <- readRDS(inputDirectory)
   combinedOutput <- data %>%
     dplyr::group_by(sex, age, measure, scenario, scen, disease, year) %>%
@@ -1388,7 +1331,7 @@ PAOutcomes <- function(inputFile) {
                      cycle_base= srvyr::survey_mean(time_base_bicycle*60),
                      cycle_scen = srvyr::survey_mean(time_scen_bicycle*60))
   
-  # saveRDS(PA_weighted, file=paste0(finalLocation, "/PAall.rds"))
+
   
   #### Meets guidelines
   PA_weighted  <- dataAll %>% 
@@ -1402,7 +1345,7 @@ PAOutcomes <- function(inputFile) {
     dplyr::summarize(meets_base= srvyr::survey_mean(meets_pa_base, na.rm = T), 
                      meets_scen = srvyr::survey_mean(meets_pa_scen, na.rm = T))
   
-  # saveRDS(PA_guide_weighted, file=paste0(finalLocation, "/PAallGuide.rds"))
+
   
   return(list(PAall=PAall_weighted, PAallGuide=PA_guide_weighted))
   }
