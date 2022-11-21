@@ -1,20 +1,26 @@
-############################# FUNCTIONS CREATE SCENARIO FILES SHORT TRIPS MODEL ######################################################
+################# FUNCTIONS CREATE SCENARIO FILES SHORT TRIPS MODEL (MELBOURNE AND BRISBANE) ######################################
 
 suppressPackageStartupMessages(library(dplyr))
 
 ### Function to create trips files (used to create scenario trips)
-calculateShortTrips <- function(trips_melbourne = in_data, 
+calculateShortTrips <- function(trips_city = in_data, 
                                   walk_speed=4,
                                   cycle_speed=11,
                                   original_mode = "car" , # Just car trips can be replaced
                                   distance_replace_walk = 0,
                                   distance_replace_cycle = 0,
                                   purpose_input = "Leisure,Shopping,Work,Education,Other") {
+  ### SP note: 'run_inputs_exposure.R' has note saying default speeds of 
+  ### 4.8 for walking and 14.5 for cycling are used.  Which is correct?
   
   ## Data to test function
   # in_data="Data/processed/trips_melbourne.csv"
   # in_speed="Data/processed/speed_trips_melbourne.csv"
-  # trips_melbourne = in_data
+  
+  # in_data="Data/processed/trips_brisbane.csv"
+  # in_speed="Data/processed/speed_trips_brisbane.csv"
+  
+  # trips_city = in_data
   # speed = in_speed
   # original_mode = "car"
   # distance_replace_walk = 0
@@ -24,15 +30,17 @@ calculateShortTrips <- function(trips_melbourne = in_data,
   purpose_input <- unlist(strsplit(purpose_input,","))
   
   
-  trips_melbourne <- read.csv(trips_melbourne,as.is=T,fileEncoding="UTF-8-BOM") %>%
+  trips_city <- read.csv(trips_city,as.is=T,fileEncoding="UTF-8-BOM") %>%
     dplyr::mutate(trip_mode=case_when(trip_mode=="pedestrian" ~ 'walking', 
                                       trip_mode=="bus" ~ 'public.transport', 
-                                      trip_mode=="tram" ~ 'public.transport', 
+                                      trip_mode=="tram" ~ 'public.transport',
+                                      trip_mode=="ferry" ~ 'public.transport',
+                                      trip_mode=="light rail" ~ 'public.transport',
                                       trip_mode=="train" ~ 'public.transport',
                                       trip_mode=="motorcycle" ~ 'other',
                                       TRUE ~ tolower(trip_mode))) ## Add age groups to facilitate selection above and matching  
   
-  trips_melbourne_scenarios <- trips_melbourne %>%
+  trips_city_scenarios <- trips_city %>%
     dplyr::rename(trip_mode_base = trip_mode,
                   trip_duration_base = trip_duration,
                   trip_distance_base = trip_distance) %>%
@@ -69,27 +77,38 @@ calculateShortTrips <- function(trips_melbourne = in_data,
     dplyr::mutate(trip_duration_base_hrs = trip_duration_base * 7) %>%
     dplyr::mutate(trip_duration_scen_hrs = trip_duration_scen * 7) %>%
     mutate_if(is.character,as.factor)
-  return(trips_melbourne_scenarios)
+  return(trips_city_scenarios)
   
 }
 
 ### Function to create matched population
 
-generateMatchedPopulationScenario <- function(output_location="./scenarios/",
+generateMatchedPopulationScenario <- function(output_location,
                                               scenario_name="default",
-                                              in_data="./Data/processed/trips_melbourne.csv",
+                                              in_data,
+                                              travel_data_location,
                                               max_walk,
                                               max_cycle,
                                               purpose) {
   
 
   ## Data to test function
-  # output_location="./scenarios"
+  # output_location="./scenarios/melbourne-scenarios"
   # scenario_name="all_2_10"
   # in_data="./Data/processed/trips_melbourne.csv"
+  # travel_data_location="./Data/processed/travel_data_melbourne.csv"
   # max_walk=2
   # max_cycle=10
   # purpose="Leisure,Shopping,Work,Education,Other"
+  
+  # output_location="./scenarios/brisbane-scenarios"
+  # scenario_name="all_2_10"
+  # in_data="./Data/processed/trips_brisbane.csv"
+  # travel_data_location="./Data/processed/travel_data_brisbane.csv"
+  # max_walk=2
+  # max_cycle=10
+  # purpose="Leisure,Shopping,Work,Education,Other"
+  
   
   # in case the directory hasn't been made yet
   dir.create(output_location, recursive=TRUE, showWarnings=FALSE)
@@ -98,7 +117,7 @@ generateMatchedPopulationScenario <- function(output_location="./scenarios/",
   
   # Scenario trips
   scenario_trips <- calculateShortTrips(
-    trips_melbourne = in_data, 
+    trips_city = in_data, 
     # speed = in_speed,
     original_mode = "car", # c("car","public.transport") , # Just car trips can be replaced
     distance_replace_walk = max_walk,
@@ -111,14 +130,14 @@ generateMatchedPopulationScenario <- function(output_location="./scenarios/",
   
   # Persons travel (VISTA people are allocated travel patterns)
   persons_travel <- calculatePersonsTravelScenario(
-    travel_data_location="./Data/processed/travel_data.csv", ##  generated in script runInputsMelbourneExposure.R 
+    travel_data_location, ##  generated in script synthetic_pop.R 
     scenario_location=scenario_trips ## Generated above
   )
   write.csv(persons_travel, paste0(output_location,"/personTravel/",scenario_name,".csv"), row.names=F, quote=T)
   
   # Matched population
   persons_matched <- calculatePersonsMatch(
-    pa_location="./Data/processed/persons_pa.csv", ## generated in script runInputsMelbourneExposure.R 
+    pa_location="./Data/processed/persons_pa.csv", ## generated in script synthetic_pop.R 
     persons_travel_location=persons_travel  ## Generated above
   ) %>% dplyr::mutate(scen=scenario_name)
 

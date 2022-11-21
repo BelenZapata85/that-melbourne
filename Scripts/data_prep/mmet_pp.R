@@ -21,9 +21,16 @@ calculateMMETSperPerson <- function(matched_pop_location,MMET_CYCLING,MMET_WALKI
     synth_pop <- matched_pop_location
   }
   
+  # select appropriate age field ('age' for Melbourne; 'age_band' for Brisbane)
+  if ("age" %in% colnames(synth_pop)) {
+    age_field <- "age"
+  } else if ("age_band" %in% colnames(synth_pop)) {
+    age_field <- "age_band"
+  }
+  
   synth_pop <- synth_pop %>%
     dplyr::mutate(participant_id = row_number()) %>% 
-    dplyr::select(participant_id, sex, age, dem_index, age_group_2, mod_leis_hr, mod_work_hr, mod_total_hr, vig_total_hr,
+    dplyr::select(participant_id, sex, all_of(age_field), dem_index, age_group_2, mod_leis_hr, mod_work_hr, mod_total_hr, vig_total_hr,
                   vig_leis_hr, mod_work_hr, walk_rc, participant_wt,
                   starts_with("time") & contains(c("walking", "bicycle"))) %>%
     replace(is.na(.), 0) 
